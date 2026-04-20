@@ -20,15 +20,20 @@ import {
   Sparkles,
   User,
 } from "lucide-react";
-import type { ConnectionDetails, InterviewEvaluation } from "../lib/types";
+import type {
+  ConnectionDetails,
+  InterviewEvaluation,
+  TranscriptTurn,
+} from "../lib/types";
 
 type Props = {
   connection: ConnectionDetails;
-  onEvaluation: (e: InterviewEvaluation) => void;
+  onEvaluation: (e: InterviewEvaluation, transcript: TranscriptTurn[]) => void;
   onLeave: () => void;
 };
 
 const EVAL_RPC_METHOD = "interview.evaluation";
+const WRAPUP_RPC_METHOD = "interview.wrapping_up";
 
 export function LiveInterviewScreen({
   connection,
@@ -37,6 +42,17 @@ export function LiveInterviewScreen({
 }: Props) {
   const [room, setRoom] = useState<Room | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
+
+  // Wrap state lives here (not in InterviewStage) so the parent-level RPC
+  // handler for interview.wrapping_up can flip it the moment the agent's
+  // tool fires -- the candidate sees the overlay before the goodbye TTS
+  // even starts playing.
+  const [wrap, setWrap] = useState<WrapPhase>({ kind: "idle" });
+
+  // The current merged transcript, updated by InterviewStage on every render.
+  // Captured here so the evaluation RPC handler can hand it to App / the
+  // EvaluationScreen for download.
+  const transcriptRef = useRef<TranscriptTurn[]>([]);
 
   const onEvaluationRef = useRef(onEvaluation);
   useEffect(() => {
@@ -49,17 +65,32 @@ export function LiveInterviewScreen({
 
     const connectRoom = async () => {
       try {
-        // Register the RPC handler BEFORE connect so we can't miss the
-        // agent's interview.evaluation call.
+        // Register RPC handlers BEFORE connect so we can't miss anything
+        // the agent might send right after dispatch.
         r.localParticipant.registerRpcMethod(
           EVAL_RPC_METHOD,
           async (data: RpcInvocationData) => {
             try {
               const parsed = JSON.parse(data.payload) as InterviewEvaluation;
-              onEvaluationRef.current(parsed);
+              onEvaluationRef.current(parsed, transcriptRef.current);
             } catch (e) {
               console.error("failed to parse evaluation payload", e);
             }
+            return "ok";
+          },
+        );
+
+        // Agent fires this the moment its end_interview tool is called,
+        // so the UI flips to "Generating your report" immediately instead
+        // of leaving the candidate staring at the live screen for 10s.
+        r.localParticipant.registerRpcMethod(
+          WRAPUP_RPC_METHOD,
+          async () => {
+            setWrap((prev) =>
+              prev.kind === "idle"
+                ? { kind: "wrapping", startedAt: Date.now() }
+                : prev,
+            );
             return "ok";
           },
         );
@@ -131,6 +162,11 @@ export function LiveInterviewScreen({
       <InterviewStage
         onLeave={onLeave}
         candidate={connection.participant_name}
+        wrap={wrap}
+        setWrap={setWrap}
+        onTranscriptChange={(turns) => {
+          transcriptRef.current = turns;
+        }}
       />
     </RoomContext.Provider>
   );
@@ -161,16 +197,21 @@ const EVAL_TIMEOUT_MS = 60_000;
 function InterviewStage({
   onLeave,
   candidate,
+  wrap,
+  setWrap,
+  onTranscriptChange,
 }: {
   onLeave: () => void;
   candidate: string;
+  wrap: WrapPhase;
+  setWrap: React.Dispatch<React.SetStateAction<WrapPhase>>;
+  onTranscriptChange: (turns: TranscriptTurn[]) => void;
 }) {
   const room = useRoomContext();
   const { state, audioTrack } = useVoiceAssistant();
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
   const transcriptions = useTranscriptions();
 
-  const [wrap, setWrap] = useState<WrapPhase>({ kind: "idle" });
   const isEnding = wrap.kind !== "idle";
   const timeoutRef = useRef<number | null>(null);
 
@@ -225,6 +266,18 @@ function InterviewStage({
     }
     return merged;
   }, [transcriptions, localParticipant?.identity]);
+
+  // Hand the latest merged transcript up to the parent so the eval RPC
+  // handler can pass it forward to the EvaluationScreen for download.
+  useEffect(() => {
+    onTranscriptChange(
+      turns.map((t) => ({
+        role: t.role,
+        text: t.text,
+        timestamp: t.timestamp,
+      })),
+    );
+  }, [turns, onTranscriptChange]);
 
   // Sticky-bottom auto-scroll.
   const scrollerRef = useRef<HTMLDivElement | null>(null);

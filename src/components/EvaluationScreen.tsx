@@ -2,6 +2,7 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Download,
+  FileText,
   RotateCcw,
   Star,
   ThumbsUp,
@@ -11,10 +12,12 @@ import type {
   InterviewEvaluation,
   RecommendedDecision,
   SkillAssessment,
+  TranscriptTurn,
 } from "../lib/types";
 
 type Props = {
   evaluation: InterviewEvaluation;
+  transcript?: TranscriptTurn[];
   onRestart: () => void;
 };
 
@@ -37,19 +40,59 @@ const DECISION_TONE: Record<RecommendedDecision, string> = {
     "from-rose-glow/35 to-rose-glow/10 text-rose-100 border-rose-glow/50",
 };
 
-export function EvaluationScreen({ evaluation, onRestart }: Props) {
-  const downloadJson = () => {
-    const blob = new Blob([JSON.stringify(evaluation, null, 2)], {
-      type: "application/json",
-    });
+export function EvaluationScreen({
+  evaluation,
+  transcript,
+  onRestart,
+}: Props) {
+  const baseFilename =
+    evaluation.candidate_name.replace(/\s+/g, "_") || "candidate";
+  const hasTranscript = !!transcript && transcript.length > 0;
+
+  const triggerDownload = (
+    contents: string,
+    mime: string,
+    filename: string,
+  ) => {
+    const blob = new Blob([contents], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${
-      evaluation.candidate_name.replace(/\s+/g, "_") || "candidate"
-    }_evaluation.json`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const downloadJson = () => {
+    triggerDownload(
+      JSON.stringify(evaluation, null, 2),
+      "application/json",
+      `${baseFilename}_evaluation.json`,
+    );
+  };
+
+  const downloadTranscript = () => {
+    if (!transcript || transcript.length === 0) return;
+    const lines: string[] = [
+      `Interview Transcript`,
+      `Candidate: ${evaluation.candidate_name}`,
+      `Role: ${evaluation.role}`,
+      `Generated: ${new Date().toISOString()}`,
+      ``,
+      `---`,
+      ``,
+    ];
+    for (const t of transcript) {
+      const label = t.role === "agent" ? "INTERVIEWER" : "CANDIDATE";
+      lines.push(`${label}:`);
+      lines.push(t.text);
+      lines.push("");
+    }
+    triggerDownload(
+      lines.join("\n"),
+      "text/plain;charset=utf-8",
+      `${baseFilename}_transcript.txt`,
+    );
   };
 
   return (
@@ -77,7 +120,20 @@ export function EvaluationScreen({ evaluation, onRestart }: Props) {
           className="inline-flex items-center gap-2 rounded-full border border-hairline bg-ink-2 px-4 py-2 text-sm font-medium text-cream transition hover:bg-ink-3"
         >
           <Download className="h-4 w-4" strokeWidth={1.8} />
-          Download JSON
+          Evaluation JSON
+        </button>
+        <button
+          onClick={downloadTranscript}
+          disabled={!hasTranscript}
+          title={
+            hasTranscript
+              ? "Download the full interview transcript as text"
+              : "No transcript available"
+          }
+          className="inline-flex items-center gap-2 rounded-full border border-hairline bg-ink-2 px-4 py-2 text-sm font-medium text-cream transition hover:bg-ink-3 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <FileText className="h-4 w-4" strokeWidth={1.8} />
+          Transcript
         </button>
         <button
           onClick={onRestart}

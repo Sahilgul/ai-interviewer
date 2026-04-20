@@ -7,12 +7,17 @@ import type {
   ConnectionDetails,
   InterviewEvaluation,
   SetupValues,
+  TranscriptTurn,
 } from "./lib/types";
 
 type Phase =
   | { kind: "setup" }
   | { kind: "live"; connection: ConnectionDetails }
-  | { kind: "result"; evaluation: InterviewEvaluation };
+  | {
+      kind: "result";
+      evaluation: InterviewEvaluation;
+      transcript: TranscriptTurn[];
+    };
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>({ kind: "setup" });
@@ -36,9 +41,12 @@ export default function App() {
     }
   }, []);
 
-  const onEvaluation = useCallback((evaluation: InterviewEvaluation) => {
-    setPhase({ kind: "result", evaluation });
-  }, []);
+  const onEvaluation = useCallback(
+    (evaluation: InterviewEvaluation, transcript: TranscriptTurn[]) => {
+      setPhase({ kind: "result", evaluation, transcript });
+    },
+    [],
+  );
 
   const reset = useCallback(() => {
     setPhase({ kind: "setup" });
@@ -64,5 +72,11 @@ export default function App() {
     );
   }
 
-  return <EvaluationScreen evaluation={phase.evaluation} onRestart={reset} />;
+  return (
+    <EvaluationScreen
+      evaluation={phase.evaluation}
+      transcript={phase.transcript}
+      onRestart={reset}
+    />
+  );
 }

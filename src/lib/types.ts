@@ -35,3 +35,9 @@ export type SetupValues = {
   job_description: string;
   resume: string;
 };
+
+export type TranscriptTurn = {
+  role: "agent" | "you";
+  text: string;
+  timestamp: number;
+};
