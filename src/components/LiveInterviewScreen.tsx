@@ -10,7 +10,16 @@ import {
   useRoomContext,
 } from "@livekit/components-react";
 import { Room, type RpcInvocationData } from "livekit-client";
-import { Bot, Loader2, LogOut, Mic, MicOff, User } from "lucide-react";
+import {
+  AlertTriangle,
+  Bot,
+  Loader2,
+  LogOut,
+  Mic,
+  MicOff,
+  Sparkles,
+  User,
+} from "lucide-react";
 import type { ConnectionDetails, InterviewEvaluation } from "../lib/types";
 
 type Props = {
@@ -141,6 +150,14 @@ type Turn = {
   timestamp: number;
 };
 
+type WrapPhase =
+  | { kind: "idle" }
+  | { kind: "wrapping"; startedAt: number }
+  | { kind: "stuck" }
+  | { kind: "error"; message: string };
+
+const EVAL_TIMEOUT_MS = 60_000;
+
 function InterviewStage({
   onLeave,
   candidate,
@@ -153,7 +170,23 @@ function InterviewStage({
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
   const transcriptions = useTranscriptions();
 
-  const [isEnding, setIsEnding] = useState(false);
+  const [wrap, setWrap] = useState<WrapPhase>({ kind: "idle" });
+  const isEnding = wrap.kind !== "idle";
+  const timeoutRef = useRef<number | null>(null);
+
+  // If the evaluation never arrives in EVAL_TIMEOUT_MS, fall back to "stuck".
+  useEffect(() => {
+    if (wrap.kind !== "wrapping") return;
+    timeoutRef.current = window.setTimeout(() => {
+      setWrap({ kind: "stuck" });
+    }, EVAL_TIMEOUT_MS);
+    return () => {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    };
+  }, [wrap.kind]);
 
   // Step 1: dedupe by streamInfo.id (latest text wins for live updates),
   // sort by timestamp.
@@ -208,7 +241,7 @@ function InterviewStage({
 
   const endInterview = async () => {
     if (isEnding) return;
-    setIsEnding(true);
+    setWrap({ kind: "wrapping", startedAt: Date.now() });
     try {
       const agentIdentity =
         [...room.remoteParticipants.values()].find(
@@ -216,12 +249,15 @@ function InterviewStage({
         )?.identity ?? "";
 
       if (!agentIdentity) {
+        // The agent never joined or already left — nothing to wrap up.
         onLeave();
         return;
       }
 
       // Tell the agent to wrap up. The agent will speak a goodbye, run the
       // evaluator, and call us back via the "interview.evaluation" RPC.
+      // The component unmounts when that RPC fires (App swaps to the report
+      // screen), which clears our timeout.
       await localParticipant.performRpc({
         destinationIdentity: agentIdentity,
         method: "interview.end",
@@ -229,7 +265,13 @@ function InterviewStage({
       });
     } catch (err) {
       console.error("interview.end RPC failed", err);
-      onLeave();
+      setWrap({
+        kind: "error",
+        message:
+          err instanceof Error
+            ? err.message
+            : "Could not reach the interviewer.",
+      });
     }
   };
 
@@ -346,6 +388,109 @@ function InterviewStage({
           </button>
         </div>
       </footer>
+
+      <WrapOverlay
+        wrap={wrap}
+        onRetry={() => setWrap({ kind: "idle" })}
+        onLeave={onLeave}
+      />
+    </div>
+  );
+}
+
+function WrapOverlay({
+  wrap,
+  onRetry,
+  onLeave,
+}: {
+  wrap: WrapPhase;
+  onRetry: () => void;
+  onLeave: () => void;
+}) {
+  if (wrap.kind === "idle") return null;
+
+  return (
+    <div className="fade-in fixed inset-0 z-50 grid place-items-center bg-ink/80 px-6 backdrop-blur-md">
+      <div className="surface edge w-full max-w-lg rounded-3xl p-8 text-center shadow-2xl">
+        {wrap.kind === "wrapping" ? (
+          <>
+            <div className="mx-auto grid h-14 w-14 place-items-center rounded-full border border-amber-glow/40 bg-gradient-to-br from-amber-glow/30 to-rose-glow/20 shadow-[0_0_40px_-8px_oklch(0.78_0.16_70_/_0.6)]">
+              <Sparkles className="h-6 w-6 text-amber-glow" strokeWidth={1.6} />
+            </div>
+            <p className="mt-6 font-serif text-3xl italic text-cream">
+              Generating your report
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-cream-2/70">
+              The interviewer is wrapping up and analyzing the conversation.
+              <br />
+              This usually takes 5–15 seconds.
+            </p>
+            <div className="mt-7 flex items-center justify-center gap-3 text-xs uppercase tracking-[0.24em] text-mute">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-glow" />
+              Please don't close this tab
+            </div>
+          </>
+        ) : wrap.kind === "stuck" ? (
+          <>
+            <div className="mx-auto grid h-14 w-14 place-items-center rounded-full border border-amber-glow/40 bg-amber-glow/10">
+              <AlertTriangle
+                className="h-6 w-6 text-amber-glow"
+                strokeWidth={1.6}
+              />
+            </div>
+            <p className="mt-6 font-serif text-3xl italic text-cream">
+              This is taking longer than usual
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-cream-2/70">
+              The evaluation hasn't arrived yet. It may still be on its way.
+              You can keep waiting, or leave and check back later.
+            </p>
+            <div className="mt-7 flex flex-col-reverse items-center justify-center gap-3 sm:flex-row">
+              <button
+                onClick={onLeave}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-hairline bg-ink-2 px-5 py-2.5 text-sm font-medium text-cream-2 hover:bg-ink-3 sm:w-auto"
+              >
+                Leave anyway
+              </button>
+              <button
+                onClick={onRetry}
+                className="btn-primary inline-flex w-full items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold sm:w-auto"
+              >
+                Keep waiting
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mx-auto grid h-14 w-14 place-items-center rounded-full border border-rose-glow/40 bg-rose-glow/10">
+              <AlertTriangle
+                className="h-6 w-6 text-rose-100"
+                strokeWidth={1.6}
+              />
+            </div>
+            <p className="mt-6 font-serif text-3xl italic text-cream">
+              We couldn't reach the interviewer
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-cream-2/70">
+              {wrap.message}
+            </p>
+            <div className="mt-7 flex flex-col-reverse items-center justify-center gap-3 sm:flex-row">
+              <button
+                onClick={onLeave}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-hairline bg-ink-2 px-5 py-2.5 text-sm font-medium text-cream-2 hover:bg-ink-3 sm:w-auto"
+              >
+                Back to start
+              </button>
+              <button
+                onClick={onRetry}
+                className="btn-primary inline-flex w-full items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold sm:w-auto"
+              >
+                Try again
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
