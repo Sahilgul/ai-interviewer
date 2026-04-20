@@ -30,10 +30,20 @@ export type InterviewEvaluation = {
   recommended_decision: RecommendedDecision;
 };
 
+// Optional interviewer profile the candidate can paste in to make the
+// agent's questions reflect a real panel (name optional, profile is the
+// raw LinkedIn paste). Mirrored 1:1 by the backend pydantic model and
+// by the agent's `_normalize_panel` in prompt.py.
+export type InterviewerProfile = {
+  name: string;
+  profile: string;
+};
+
 export type SetupValues = {
   candidate_name: string;
   job_description: string;
   resume: string;
+  panel: InterviewerProfile[];
 };
 
 export type TranscriptTurn = {

@@ -15,13 +15,35 @@ const TOKEN_ENDPOINT = import.meta.env.DEV
 export async function fetchConnectionDetails(
   values: SetupValues,
 ): Promise<ConnectionDetails> {
+  // The backend's contract is intentionally minimal: it only knows about
+  // `candidate_name` (used for the LiveKit participant identity) and an
+  // opaque `agent_context` blob it forwards verbatim to the agent.
+  //
+  // Adding a new agent input is a frontend + agent change only -- just
+  // include the new field in `agent_context` below and read it in the
+  // agent's `_load_session_inputs`. The backend microservice doesn't
+  // need to be redeployed.
+  const panel = (values.panel ?? [])
+    .map((p) => ({ name: p.name.trim(), profile: p.profile.trim() }))
+    .filter((p) => p.profile.length > 0);
+
+  const agent_context: Record<string, unknown> = {};
+  if (values.job_description) {
+    agent_context.job_description = values.job_description;
+  }
+  if (values.resume) {
+    agent_context.resume = values.resume;
+  }
+  if (panel.length > 0) {
+    agent_context.panel = panel;
+  }
+
   const res = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       candidate_name: values.candidate_name || undefined,
-      job_description: values.job_description || undefined,
-      resume: values.resume || undefined,
+      agent_context,
     }),
   });
   if (!res.ok) {

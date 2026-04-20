@@ -5,10 +5,13 @@ import {
   FileText,
   Loader2,
   Mic,
+  Plus,
   User,
+  Users,
   Waves,
+  X,
 } from "lucide-react";
-import type { SetupValues } from "../lib/types";
+import type { InterviewerProfile, SetupValues } from "../lib/types";
 
 type Props = {
   onStart: (values: SetupValues) => Promise<void> | void;
@@ -24,10 +27,54 @@ const PLACEHOLDER_RESUME = `Paste the candidate resume here (plain text).
 
 Leave blank to use the demo resume.`;
 
+const PLACEHOLDER_PANELIST = `Paste their LinkedIn here — About + Experience is plenty.
+
+The agent uses it to shape question depth and topic mix, so it asks the kind of things this person actually cares about. It will not read the profile back to you.`;
+
+// Keep this in lock-step with the backend's MAX_PANEL_SIZE-aware UI cap.
+// We deliberately let users add fewer than the backend max so the form
+// stays focused -- 4 is what most real onsite panels look like.
+const MAX_PANEL_UI = 4;
+// Higher than the agent's per-panelist trim threshold (3K) so users with
+// long LinkedIn pastes don't get silently truncated by the form before the
+// agent has a chance to do its own smart trim.
+const MAX_PANELIST_PROFILE_CHARS = 8000;
+
+// Stable, monotonic IDs for React keys so adding/removing rows doesn't
+// shuffle DOM nodes and lose textarea focus.
+let _panelistIdSeq = 0;
+const newPanelist = (): InterviewerProfile & { _id: string } => ({
+  _id: `panelist-${++_panelistIdSeq}`,
+  name: "",
+  profile: "",
+});
+
+type PanelistDraft = ReturnType<typeof newPanelist>;
+
 export function SetupScreen({ onStart, isStarting, error }: Props) {
   const [name, setName] = useState("");
   const [jd, setJd] = useState("");
   const [resume, setResume] = useState("");
+  const [panel, setPanel] = useState<PanelistDraft[]>([]);
+
+  const addPanelist = () => {
+    if (panel.length >= MAX_PANEL_UI) return;
+    setPanel((p) => [...p, newPanelist()]);
+  };
+
+  const removePanelist = (id: string) => {
+    setPanel((p) => p.filter((row) => row._id !== id));
+  };
+
+  const updatePanelist = (
+    id: string,
+    field: "name" | "profile",
+    value: string,
+  ) => {
+    setPanel((p) =>
+      p.map((row) => (row._id === id ? { ...row, [field]: value } : row)),
+    );
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,6 +82,15 @@ export function SetupScreen({ onStart, isStarting, error }: Props) {
       candidate_name: name.trim(),
       job_description: jd.trim(),
       resume: resume.trim(),
+      // Strip the local _id, trim text, drop empty rows. The api layer
+      // also defends against this, but doing it here keeps the SetupValues
+      // contract clean for any caller that bypasses api.ts (e.g. tests).
+      panel: panel
+        .map(({ name: n, profile: p }) => ({
+          name: n.trim(),
+          profile: p.trim(),
+        }))
+        .filter((p) => p.profile.length > 0),
     });
   };
 
@@ -158,6 +214,13 @@ export function SetupScreen({ onStart, isStarting, error }: Props) {
                 maxLength={20000}
               />
             </Field>
+
+            <PanelSection
+              panel={panel}
+              onAdd={addPanelist}
+              onRemove={removePanelist}
+              onUpdate={updatePanelist}
+            />
           </div>
 
           {error && (
@@ -236,6 +299,135 @@ function Feature({
       </p>
       <p className="mt-2 text-sm font-medium text-cream">{title}</p>
       <p className="mt-1 text-[12.5px] leading-relaxed text-mute">{body}</p>
+    </li>
+  );
+}
+
+function PanelSection({
+  panel,
+  onAdd,
+  onRemove,
+  onUpdate,
+}: {
+  panel: PanelistDraft[];
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onUpdate: (id: string, field: "name" | "profile", value: string) => void;
+}) {
+  const isFull = panel.length >= MAX_PANEL_UI;
+
+  return (
+    <div className="block">
+      {/* Header row mimics the <Field> label rhythm so it sits in the
+          same visual column as JD / Resume above it. */}
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-mute">
+          <Users className="h-3.5 w-3.5 text-mute/80" />
+          Interviewer panel
+          <span className="font-sans text-[10px] tracking-normal text-mute/60 normal-case">
+            · optional
+          </span>
+        </div>
+        {panel.length > 0 && (
+          <span className="text-[10px] uppercase tracking-[0.18em] text-mute/60">
+            {panel.length} / {MAX_PANEL_UI}
+          </span>
+        )}
+      </div>
+
+      <p className="mb-3 text-xs leading-relaxed text-mute">
+        Paste each panelist's LinkedIn so the agent asks the kind of
+        questions they actually ask. Up to {MAX_PANEL_UI} interviewers.
+      </p>
+
+      {panel.length === 0 ? (
+        <button
+          type="button"
+          onClick={onAdd}
+          className="group flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-hairline bg-ink/30 px-3.5 py-3 text-sm text-mute transition hover:border-amber-glow/50 hover:bg-ink/60 hover:text-cream"
+        >
+          <Plus className="h-4 w-4" />
+          Add an interviewer
+        </button>
+      ) : (
+        <ul className="grid gap-3">
+          {panel.map((p, idx) => (
+            <PanelistCard
+              key={p._id}
+              index={idx}
+              panelist={p}
+              onRemove={() => onRemove(p._id)}
+              onUpdate={(field, value) => onUpdate(p._id, field, value)}
+            />
+          ))}
+        </ul>
+      )}
+
+      {panel.length > 0 && (
+        <button
+          type="button"
+          onClick={onAdd}
+          disabled={isFull}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-hairline bg-ink-2/60 px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-mute transition hover:border-amber-glow/40 hover:text-cream disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-mute"
+        >
+          <Plus className="h-3 w-3" />
+          {isFull ? "Maximum reached" : "Add another"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PanelistCard({
+  index,
+  panelist,
+  onRemove,
+  onUpdate,
+}: {
+  index: number;
+  panelist: PanelistDraft;
+  onRemove: () => void;
+  onUpdate: (field: "name" | "profile", value: string) => void;
+}) {
+  return (
+    <li className="rounded-2xl border border-hairline bg-ink-2/40 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="grid h-6 w-6 place-items-center rounded-full border border-hairline bg-ink/60 text-[10px] font-semibold text-mute">
+            {index + 1}
+          </span>
+          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-mute">
+            Interviewer
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove interviewer ${index + 1}`}
+          className="grid h-7 w-7 place-items-center rounded-full text-mute transition hover:bg-rose-glow/15 hover:text-rose-100"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="grid gap-3">
+        <input
+          value={panelist.name}
+          onChange={(e) => onUpdate("name", e.target.value)}
+          placeholder="Name (optional) — e.g. Priya Sharma"
+          className={inputClass}
+          maxLength={120}
+          autoComplete="off"
+        />
+        <textarea
+          value={panelist.profile}
+          onChange={(e) => onUpdate("profile", e.target.value)}
+          placeholder={PLACEHOLDER_PANELIST}
+          rows={4}
+          className={`${inputClass} font-mono text-[12.5px] leading-relaxed`}
+          maxLength={MAX_PANELIST_PROFILE_CHARS}
+        />
+      </div>
     </li>
   );
 }
